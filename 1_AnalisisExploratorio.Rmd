@@ -1,0 +1,203 @@
+---
+title: "Análisis exploratorio"
+author: "Abraham Cruz-Mendívil"
+date: "2025-07-01"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: zenburn
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Instalar paquetes (sólo la primera vez)
+```{r, eval = FALSE}
+# install.packages("tidyverse")
+# install.packages("cowplot")
+# install.packages("viridis")
+# install.packages("BiocManager")
+# BiocManager::install("tximport")
+# BiocManager::install("DESeq2")
+```
+
+Cargar paquetes (cada vez que inicie sesión en R)
+```{r, message = FALSE}
+library(cowplot)
+library(viridis)
+library(tximport)
+library(DESeq2)
+library(tidyverse)
+```
+
+## 1. Importación de archivos
+
+### 1.1. Importar archivos de conteos (kallisto)
+```{r}
+files <- list.files(full.names = TRUE, 
+                    path = "conteos crudos", 
+                    pattern = "*.tsv")
+files
+```
+
+### 1.2. Importar metadatos con información de los bioproyectos
+```{r}
+metadatos <- read.csv("~/Desktop/Meta-analisis transcriptomico/4/metadata_all.csv", sep=";")
+head(metadatos)
+```
+
+Verificar que número de elementos en files = número de filas en metadatos
+```{r}
+length(files) == nrow(metadatos)
+```
+
+### 1.3. Importar equivalencia de IDs de transcritos y genes. 
+
+Este archivo se obtiene de Ensembl Biomart <https://plants.ensembl.org/info/data/biomart/index.html>
+
+1.  Seleccionar BioMart data mining tool
+
+2.  Choose database / Ensembl Plant Genes
+
+3.  Choose dataset / Solanum lycopersicum genes (SL3.0)
+
+4.  Seleccionar Attributes del menú izquierdo
+
+5.  De la sección GENE, seleccionar Gene stable ID, Transcript stable ID, Gene start, y Gene end
+
+6.  De la sección EXTERNAL, seleccionar GO term accession
+
+7.  Dar click en Results, y exportar resultados como archivo tsv
+
+Nota: La información de gene start, gene end y go term, se usarán en el análisis de sobre-representación de categorías funcionales.  
+
+Este procedimiento puede repetirse para otros organismos disponibles en Ensembl.
+
+Importar archivo descargado de biomart.
+
+```{r}
+biomart <- read.delim("mart_export_ZM.txt")
+head(biomart)
+```
+
+Formatear el archivo de equivalencias de IDs de genes y transcritos
+```{r}
+t2g <- biomart %>%
+  rename(gene = Gene.stable.ID, transcript = Transcript.stable.ID) %>%
+  select (transcript, gene) %>%
+  distinct(transcript, .keep_all = T)
+head(t2g)
+```
+
+Combinar archivos de conteos y resumir expresion a nivel de gen
+```{r}
+txi.kallisto <- tximport(files, 
+                         type = "kallisto", 
+                         tx2gene = t2g) 
+```
+
+Definir un objeto DESeq2 a partir de los conteos de kallisto
+```{r}
+# design = columna de metadatos que usaremos para los contrastes
+dds <- DESeqDataSetFromTximport(txi.kallisto, 
+                                colData = metadatos, 
+                                design = ~ conditions)
+# Ver resumen del objeto dds
+dds
+```
+
+Generar matriz de conteos crudos
+```{r}
+rawcounts <- as.matrix(counts(dds))
+head(rawcounts)
+# Exportar archivo
+write.csv(rawcounts, file = "resultados/rawcounts.csv", row.names = TRUE)
+```
+
+Filtrar genes con conteos promedio > 10 entre todas las muestras 
+```{r}
+filtcounts <- rawcounts[rowMeans(rawcounts) > 10,]
+head(filtcounts)
+
+
+filtcounts <- as.matrix(filtcounts)
+todo_cero_g1 <- apply(filtcounts[, 1:6], 1, function(x) all(x == 0))
+todo_cero_g2 <- apply(filtcounts[, 7:12], 1, function(x) all(x == 0))
+filt_sin_ceros <- filtcounts[!todo_cero_g1 & !todo_cero_g2, ]
+
+cat("Genes eliminados por ceros en todo grupo 1:", sum(todo_cero_g1), "\n")
+cat("Genes eliminados por ceros en todo grupo 2:", sum(todo_cero_g2), "\n")
+cat("Genes restantes:", nrow(filt_sin_ceros), "\n")
+
+filtcounts <- filt_sin_ceros
+# Calcular que % de genes se expresan del total del genoma 
+p <- (nrow(filtcounts)/nrow(rawcounts))*100
+paste("genes expresados =",round(p),"%")
+# Exportar archivo
+write.csv(filtcounts, file = "resultados/filtcounts.csv", row.names = TRUE)
+```
+
+Reemplazar objeto dds original con los genes filtrados
+```{r}
+# Extraer lista de genes expresados
+expgen <- rownames(filtcounts)
+# Reemplazar objeto dds original con los genes filtrados
+dds <- dds[expgen,]
+dds
+```
+
+## 2. Análisis exploratorio
+
+Transformación de conteos con vst (variance-stabilizing transformation)
+```{r}
+vsd <- vst(dds, blind = FALSE)
+```
+
+Análisis de componentes principales (PCA)
+```{r}
+# Obtener coordenadas para PCA 
+pcaData <- plotPCA(vsd, intgroup = "treatment", returnData = TRUE)
+head(pcaData)
+```
+
+```{r}
+# Extraer % de variabilidad explicada por PC1 y PC2
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+paste("Variabilidad explicada =", sum(percentVar), "%")
+```
+
+Un PCA se considera adecuado si PC1 + PC2 explican > 70% de la variabilidad. 
+```{r}
+#Generar gráfico PCA
+pca <- ggplot(pcaData, 
+              aes(x = PC1, 
+                  y = PC2, 
+                  color = treatment, 
+                  shape = metadatos$BioProject)) + 
+  geom_point(size = 7, alpha = 0.8) +
+  scale_shape_manual(values = 15:18) + 
+  labs(title = "PCA of Zea mays leaf transcriptomes",
+       subtitle = "Raw data",
+       x = paste0("PC1: ", percentVar[1], "% variance"),
+       y = paste0("PC2: ", percentVar[2], "% variance"),
+       color = "treatment",
+       shape = "Bioproject") +
+  coord_fixed()
+pca
+ggsave(filename = "resultados/pca_raw.pdf", plot = pca, width = 11, height = 8.5)
+```
+
+
+Exportar objetos generados a archivo RData
+```{r}
+save(metadatos, dds, rawcounts, filtcounts, pca, file = "resultados/dds.RData")
+```
+
+Información de la sesión
+```{r}
+sessionInfo()
+```
+
