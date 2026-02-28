@@ -1,0 +1,113 @@
+---
+title: "Formateo de archivos para cemitool"
+author: "Abraham Cruz-Mendívil"
+date: "2025-07-03"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: zenburn
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Cargar paquetes (cada vez que inicie sesión en R)
+```{r, message = FALSE}
+library(tidyverse)
+```
+
+## Formateo de archivo de términos gene ontology (GO)
+
+Importar archivo de categorías funcionales GO del genoma completo (obtenido de biomart).
+```{r}
+go_gene <- read.csv(file = "gene_GO.csv")
+head(go_gene)
+```
+
+Importar archivo de resultados goseq.
+```{r}
+go_results <- read.csv(file = "GOresults_commonDEGs.csv")
+head(go_results)
+```
+
+A diferencia de goseq, cemitool no tiene una base interna de GO, por lo que necesitamos darle el nombre del término (ej. membrane) en lugar del ID (ej. GO:0016020) para los gráficos. 
+```{r}
+go_cemitool <- go_results %>% 
+    select(category, term, ontology) %>% # Extraer info de términos GO
+    inner_join(go_gene, by = "category") %>% # Unir gene IDs (genoma completo)
+    distinct() %>%    # Eliminar filas duplicadas
+    mutate(newcol = str_c(ontology, term, sep = "_")) %>% # Crear nueva columna 
+    select(newcol, gene) %>% # Seleccionar nueva columna y los genes
+    rename(term = newcol) # Renombrar columna para cemitool
+head(go_cemitool)
+```
+
+Exportar archivo editado. 
+```{r}
+write_csv(go_cemitool, file = "go_gene_cemitool.csv")
+```
+
+
+## Formateo de archivo de interacción proteína proteína (PPI)
+
+El archivo PPI (protein.links) para tu organismo se puede descargar de STRING https://string-db.org/cgi/download. Se recomienda filtrar interacciones de alta confianza (combined score > 700). Cemitool requiere que los proteinIDs sean convertidos a geneIDs.
+
+Importar archivo de PPI de String
+```{r}
+PPI <- read_delim(file="4577.protein.links.v12.0.txt")
+head(PPI)
+```
+
+Filtrar por score combinado > 700, y eliminar el prefijo "4081." (en mi caso "4577.") para que coincidan con los IDs de uniprot
+```{r}
+PPI_700 <- PPI %>% 
+  filter(combined_score > 700) %>% 
+  mutate(protein1 = str_remove(protein1, "4577\\."), 
+         protein2 = str_remove(protein2, "4577\\.")) 
+head(PPI_700)
+write_csv(PPI_700, file = "PPI_700.csv")
+```
+
+Importar archivo de gene IDs y uniprot IDs. Disponible en Ensembl (https://www.ensembl.org/index.html)
+```{r}
+gene_uniprot <- read_tsv(file = "Zea_mays.Zm-B73-REFERENCE-NAM-5.0.61.uniprot.tsv")
+head(gene_uniprot)
+```
+
+Seleccionar las columnas de gene IDs y uniprot IDs
+```{r}
+gene_uniprot <- gene_uniprot %>% 
+    select(gene_stable_id, xref) %>% 
+    rename(gene = gene_stable_id, uniprot = xref) %>% 
+    distinct(gene, .keep_all = TRUE)
+head(gene_uniprot)
+write_csv(gene_uniprot, file="gene_uniprot.csv")
+```
+
+Formateo del archivo PPI para convertir protein IDs a gene IDs
+```{r}
+# Convertir primer columna de proteínas a genes
+PPI_gene1 <- gene_uniprot %>%
+  rename(protein1 = uniprot) %>%         
+  inner_join(PPI_700, by = "protein1", relationship = "many-to-many") %>%    
+  rename(gene1 = gene)                 
+head(PPI_gene1)
+```
+
+```{r}
+# Convertir segunda columna de proteínas a genes 
+PPI_gen <- gene_uniprot %>%
+  rename(protein2 = uniprot) %>%         
+  inner_join(PPI_gene1, by = "protein2", relationship = "many-to-many") %>%    
+  rename(gene2 = gene) %>% 
+  select(gene1, gene2) # Seleccionar columnas de interés                 
+head(PPI_gen)
+```
+Exportar archivo editado de PPI usando gene IDs
+```{r}
+write_csv(PPI_gen, file = "PPI_gen.csv")
+```
+

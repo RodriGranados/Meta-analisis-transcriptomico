@@ -1,0 +1,137 @@
+---
+title: "Análisis de redes de co-expresión"
+author: "Abraham Cruz-Mendívil"
+date: "2025-07-03"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: zenburn
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Instalar paquetes (sólo la primera vez)
+```{r, eval = FALSE}
+# BiocManager::install("CEMiTool")
+# install.packages("tidyverse")
+```
+
+Cargar paquetes (cada vez que inicie sesión en R)
+```{r, message = FALSE}
+library(CEMiTool)
+library(tidyverse)
+```
+
+## 1. Importación de archivos
+
+Cargar datos de expresión. Si se usaron diferentes estudios, primero corregir el efecto por lote (combatseq). 
+```{r}
+adjcounts <- read.csv(file = "resultados/adjcounts.csv", row.names = 1)
+head(adjcounts)
+```
+
+Cargar archivo con muestras y clases, estas pueden representar condiciones, fenotipos, tejidos, tiempos, etc.
+```{r}
+sample_class <- read.csv("~/Desktop/Meta-analisis transcriptomico/4/sample_class.csv", sep=";")
+head(sample_class)
+```
+
+## 2. Identificación de módulos de genes coexpresados
+Correr cemitool con los conteos ajustados, la información de clases, y activando la normalización con VST (tarda un par de minutos).
+```{r}
+cem <- cemitool(adjcounts, # matriz de conteos
+                sample_class, # información de clases
+                apply_vst = TRUE) # aplicar normalización
+cem
+```
+
+## 3. Análisis de sobre-representación (ORA) de categorías funcionales
+
+Importar archivo de términos GO generado en en el script previo. 
+```{r}
+go_cemitool <- read.csv(file = "go_gene_cemitool.csv")
+head(go_cemitool)
+```
+
+Realizar ORA
+```{r}
+cem <- mod_ora(cem, go_cemitool)
+cem
+```
+
+Generar gráficos de ORA y añadirlos al objeto cem
+```{r}
+cem <- plot_ora(cem)
+plots <- show_plot(cem, "ora")
+```
+
+Visualizar el primer gráfico de ORA
+```{r}
+plots[1]
+```
+
+## 4. Redes de interacción proteína-proteína (PPI)
+
+Importar archivo de PPI editado en el script previo
+```{r}
+PPI_gen <- read.csv(file = "PPI_gen.csv")
+head(PPI_gen)
+```
+
+Agregar información de PPI a los modulos genes co-expresados
+```{r}
+# Añadir interacciones al objeto cem
+interactions_data(cem) <- PPI_gen
+```
+
+```{r}
+# Modificar número máximo de sobrelapes para etiquetas en los gráficos de redes
+options(ggrepel.max.overlaps = Inf)
+```
+
+```{r}
+# Generar gráficos de redes PPI
+cem <- plot_interactions(cem)
+plots <- show_plot(cem, "interaction") 
+```
+
+```{r}
+# Visualizar el primer gráfico de PPI
+plots[1]
+```
+
+## 5. Exportación de resultados y reportes
+
+Guardar objeto cem que incluye resultados de co-expresión, ORA y PPI
+```{r}
+save(cem, file = "resultados/cem.RData")
+```
+
+Exportar reportes html de diagnóstico y resultados 
+```{r, eval = F}
+# Escribrir reportes el directorio predeterminado (Reports)
+diagnostic_report(cem, directory = "resultados/cemitool/diagnostic", force = T)
+generate_report(cem, directory = "resultados/cemitool/report", force = T)
+```
+
+Exportar tablas y gráficos
+```{r, eval = F}
+# Exportar todas las tablas a archivos de texto
+write_files(cem, directory = "resultados/cemitool/tables", force = T)
+
+# Exportar todos los gráficos a pdf
+save_plots(cem, "all", directory = "resultados/cemitool/plots", force = T)
+```
+
+Fin del script
+
+¡Felicidades! ¡Has concluido el taller de bioinformática! =)
+
+```{r}
+sessionInfo()
+```
+

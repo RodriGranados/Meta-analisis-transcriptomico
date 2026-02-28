@@ -1,0 +1,236 @@
+---
+title: "Corrección del efecto por lote"
+author: "Abraham Cruz-Mendívil"
+date: "2025-07-01"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: zenburn
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Instalar paquetes (sólo la primera vez)
+```{r, eval = FALSE}
+# install.packages("tidyverse")
+# install.packages("cowplot")
+# install.packages("BiocManager")
+# BiocManager::install("DESeq2")
+# BiocManager::install("sva")
+```
+
+Cargar paquetes (cada vez que inicie sesión en R)
+```{r, message = FALSE}
+library(tidyverse)
+library(cowplot)
+library(DESeq2)
+library(sva)
+```
+
+## 1. Importación de archivos
+
+Cargar objeto RData del script previo
+```{r}
+load(file = "resultados/dds.RData")
+```
+
+Extraer vector con información del lote técnico (bioproyecto)
+```{r}
+head(metadatos)
+batch <- metadatos$batch
+batch
+```
+
+Verificar que archivo de entrada sea una matriz
+```{r}
+class(filtcounts)
+```
+
+## 2. Corrección del efecto por lote
+
+Generar matriz de conteos ajustados
+```{r}
+adjcounts <- ComBat_seq(filtcounts, # archivo de conteos 
+                        batch = batch, # lotes técnicos
+                        group = NULL) # covariables biológicas
+head(adjcounts)
+```
+
+Exportar archivo
+```{r}
+write.csv(adjcounts, file = "resultados/adjcounts.csv", row.names = TRUE)
+```
+
+Crear objeto deseq a partir de la matriz de conteos ajustados
+```{r}
+dds_adj <- DESeqDataSetFromMatrix(adjcounts,
+                              colData = metadatos, 
+                              design = ~ conditions)
+dds_adj
+```
+## 3. Análisis exploratorio de conteos ajustados
+
+Realizar PCA
+```{r}
+vsd2 <- vst(dds_adj, blind = FALSE)
+pcaData2 <- plotPCA(vsd2, intgroup = "treatment", returnData = T)
+head(pcaData2)
+```
+
+Variabilidad explicada
+```{r}
+percentVar2 <- round(100 * attr(pcaData2, "percentVar"))
+paste("Variabilidad explicada = ",sum(percentVar2),"%")
+```
+
+Generar gráfico PCA 
+```{r}
+pca2 <- ggplot(pcaData2, aes(x = PC1, 
+                     y = PC2, 
+                     color = treatment, 
+                     shape = metadatos$BioProject)) + 
+  geom_point(size = 7, alpha = 0.8) +
+  scale_shape_manual(values = 15:19) + 
+  labs(title = "PCA of Zea mays leaf transcriptomes",
+       subtitle = "Batch corrected data",
+       x = paste0("PC1: ", percentVar2[1], "% variance"),
+       y = paste0("PC2: ", percentVar2[2], "% variance"),
+       color = "treatment",
+       shape = "Bioproject") +
+  coord_fixed()
+pca2
+ggsave(filename = "resultados/pca_adj.pdf", plot = pca2, width = 11, height = 8.5)
+```
+
+Generar grafico combinado con PCA de conteos crudos y ajustados por lote
+```{r}
+pcas <- plot_grid(pca, pca2,
+                  ncol = 2, nrow = 1,
+                  labels = "AUTO")
+pcas
+ggsave(filename = "resultados/pca_raw_adj.pdf", plot = pcas, width = 11, height = 8.5)
+```
+
+Exportar objetos generados a archivo RData
+```{r}
+save(dds_adj, adjcounts, pca2, pcas, file = "resultados/dds_adj.RData")
+```
+
+## 4. Normalización previa al análisis de expresión diferencial
+
+DESeq2 utiliza una normalización llamada mediana de proporciones. Si deseas consultar más información sobre este método: https://bookdown.org/ggiaever/2024_RNA-seq-analysis/count-normalization.html#deseq2-normalization-median-of-ratios-method 
+```{r}
+dds_norm <- DESeq(dds_adj)
+dds_norm
+```
+
+Conocer los factores de normalización. Si nf > 1 la biblioteca estaba sobre-representada. Si nf < 1 la biblioteca estaba sub-representada. 
+```{r}
+dds_norm$sizeFactor
+```
+
+Extraer matriz de conteos normalizados
+```{r}
+normcounts <- counts(dds_norm, normalized = TRUE)
+head(normcounts)
+write.csv(normcounts, file = "resultados/normcounts.csv", row.names = TRUE)
+```
+
+Comparar la dispersión de conteos crudos, ajustados y normalizados mediante gráficos boxplot
+```{r}
+# Transformar conteos a escala log
+log_raw <- log(filtcounts+1)
+log_adj <- log(adjcounts+1)
+log_norm <- log(normcounts+1)
+```
+
+Función para transformar una matriz de conteos de formato ancho a largo
+```{r}
+wide2long <- function(countsmatrix){
+    library(tidyverse)
+    as.data.frame(countsmatrix) %>% # Convertir matriz en data frame
+    rownames_to_column("Gene") %>%  # Convertir los nombres de fila en una columna
+    pivot_longer(cols = -Gene,      # Pivotear todas las columnas excepto Gene
+                 names_to = "Sample", # Nueva columna con los nombres de muestras
+                 values_to = "Count") # Nueva columna con los valores de conteos
+}
+```
+
+Transformar matrices de formato ancho a formato largo
+```{r}
+log_raw_long <- wide2long(log_raw)
+head(log_raw_long)
+log_adj_long <- wide2long(log_adj) 
+head(log_adj_long)
+log_norm_long <- wide2long(log_norm) 
+head(log_norm_long)
+```
+
+Graficar boxplots con conteos crudos, ajustados y normalizados
+```{r}
+# Crear boxplots
+box1 <- ggplot(log_raw_long, # datos a graficar
+                   aes(x = Sample, y = Count, # estética de los ejes
+                       fill = Sample)) + # colorear relleno de la forma
+    geom_boxplot() + # tipo de grafico
+    labs(title = "Boxplot de conteos crudos", # etiquetas
+         x = "Muestras", 
+         y = "log(conteos)") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1), # Rotar nombres de las muestras
+          legend.position = "none") # Ocultar la leyenda
+box1
+
+box2 <- ggplot(log_adj_long, aes(x = Sample, y = Count, fill = Sample)) +
+    geom_boxplot() +
+    labs(title = "Boxplot de conteos ajustados", 
+         x = "Muestras", 
+         y = "log(conteos)") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1), 
+          legend.position = "none")
+box2
+
+box3 <- ggplot(log_norm_long, aes(x = Sample, y = Count, fill = Sample)) +
+    geom_boxplot() +
+    labs(title = "Boxplot de conteos normalizados", 
+         x = "Muestras", 
+         y = "log(conteos)") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1), 
+          legend.position = "none")
+box3
+```
+
+Actividad en equipo: Crear una función para generar gráficos boxplot (con ggplot), que tome como entrada un dataframe de conteos en formato largo, y un título para el gráfico. Repetir el paso previo con la nueva función.
+```{r}
+
+```
+
+Probar la función para generar gráficos boxplot
+```{r}
+
+```
+
+Agrupar gráficos
+```{r}
+boxplots <- plot_grid(box1, box2, box3,
+                      ncol = 3, nrow = 1,
+                      labels = "AUTO")
+boxplots
+# Exportar gráficos
+ggsave(filename = "resultados/boxplots.pdf", plot = boxplots, width = 11, height = 8.5)
+```
+
+Guardar objetos en archivo RData
+```{r}
+save(dds_norm, cnorm, file="resultados/dds_norm.RData")
+```
+
+Continuar con el script 4_ExpresionDiferencial.Rmd
+
+```{r}
+sessionInfo()
+```
+

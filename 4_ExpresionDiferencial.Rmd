@@ -1,0 +1,377 @@
+---
+title: "Expresión diferencial para meta-análisis"
+author: "Abraham Cruz-Mendívil"
+date: "2025-07-01"
+output: 
+ html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: no
+    theme: readable 
+    highlight: zenburn
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Instalar paquetes (sólo la primera vez)
+```{r, eval = FALSE}
+# install.packages("tidyverse")
+# install.packages("viridis")
+# install.packages("cowplot")
+# install.packages("pheatmap")
+# install.packages("ggVennDiagram")
+# install.packages("BiocManager")
+# BiocManager::install("DESeq2")
+# BiocManager::install("EnhancedVolcano")
+```
+
+Cargar paquetes (cada vez que inicie sesión en R)
+```{r, message = FALSE}
+library(DESeq2)
+library(EnhancedVolcano)
+library(tidyverse)
+library(cowplot)
+library(pheatmap)
+library(viridis)
+library(ggVennDiagram)
+```
+
+## 1. Importación de archivos
+
+Cargar objeto dds normalizado generado en el script previo
+```{r}
+load(file = "resultados/dds_norm.RData")
+dds_norm
+```
+
+Importar metadatos con información de los bioproyectos
+```{r}
+metadatos <- read.csv("~/Desktop/Meta-analisis transcriptomico/4/metadata_all.csv", sep=";")
+head(metadatos)
+```
+
+## 2. Análisis de expresión diferencial
+
+Definir las dos condiciones a comparar. 
+```{r}
+metadatos %>%  
+  group_by(conditions) %>% 
+  summarise()
+```
+
+Generar objeto de resultados para el bioproyecto 1, tratamiento en 1er lugar, control en 2do lugar.
+```{r}
+res <- results(dds_norm, contrast=c("conditions", "BP1_drought", "BP1_control"))
+res
+# Exportar archivo de resultados
+write.csv(res, file="resultados/deseq_results_BP1_drought_vs_control.csv") 
+```
+
+### 2.1. Volcano plot
+Generar gráfico de volcano para identificar DEGs.
+```{r}
+volc <- EnhancedVolcano(res,       
+               lab = rownames(res),
+               x = 'log2FoldChange',
+               y = 'padj',
+               axisLabSize = 12,
+               pCutoff = 0.01, # umbral de p-ajustado
+               FCcutoff = 1, # umbral de log2FoldChange
+               col = c('grey', 'orange', 'purple', 'forestgreen'),
+               colAlpha = 0.7, 
+               pointSize = 3,
+               title = 'Volcano Plot', 
+               titleLabSize = 12,
+               subtitle = 'BP1_drought vs BP1_control', 
+               subtitleLabSize = 10,
+               captionLabSize = 10,
+               labSize = 3,
+               legendLabels=c('NS','|log2FC|>1','adj-p<0.01','DEG'),
+               legendPosition = 'right',
+               legendLabSize = 12,
+               border = 'full')
+volc
+ggsave(filename = "resultados/volcano_BP1_drought_vs_BP1_control.pdf", 
+       plot = volc, width = 11, height = 8.5)
+```
+
+### 2.2. Extraer lista de DEGs
+
+```{r}
+deg <- subset(res, padj<0.01 & abs(log2FoldChange)>1)
+paste(nrow(deg), "DEGs") #anotar numero
+# inducidos
+up <- subset(deg, log2FoldChange>1)
+paste(nrow(up), "Up-regulated") #anotar numero
+# reprimidos
+down <- subset(deg, log2FoldChange<(-1))
+paste(nrow(down), "Down-regulated") #anotar numero
+# Exportar archivo de DEGs
+write.csv(deg, file="resultados/deg_BP1_drought_vs_BP1_control.csv", 
+          row.names = TRUE)
+```
+
+### 2.3. Heatmap
+
+Generar un mapa de calor a partir de los DEGs. 
+```{r}
+# Extraer conteos normalizados
+normcounts <- counts(dds_norm, normalized = TRUE)
+head(normcounts)
+```
+
+```{r}
+# Reemplazar nombres de columnas
+colnames(normcounts) <- metadatos$replicates 
+head(normcounts)
+```
+
+```{r}
+# Seleccionar muestras del bioproyecto 1
+subnormcounts <- normcounts[,c(1:6)]
+head(subnormcounts)
+```
+
+```{r}
+# Extraer IDs de los DEGs
+deg_id <- rownames(deg)
+head(deg_id)
+```
+
+```{r}
+# Crear el mapa de calor
+hm <- pheatmap(subnormcounts[deg_id,], 
+         scale = "row", 
+         show_rownames = FALSE, 
+         treeheight_row = 0, 
+         color = viridis(100),
+         main = "Heatmap of BP1_drought vs BP1_control")
+hm
+ggsave(filename = "resultados/heatmap_BP1_drought_vs_BP1_control.pdf", plot = hm, 
+       width = 11, height = 8.5)
+```
+
+## 3. Función analyzeDEG
+
+Con el objetivo de no repetir todos los bloques de código previos para los demás bioproyectos, vamos a crear una función que nos permita realizar en un solo paso el análisis de expresión diferencial, exportar tablas de resultados, y generar gráficos de volcano y heatmap.
+```{r}
+analyzeDEG <- function(ddsnorm, metadata, bioproject, treatment, control) {
+    # Cargar los paquetes necesarios
+    library(DESeq2)
+    library(tidyverse)
+    library(EnhancedVolcano)
+    library(pheatmap)
+    # Generar objeto de resultados con el contraste entre las dos condiciones
+    res <- results(dds_norm, contrast=c("conditions", treatment, control))
+    # Exportar archivo de resultados
+    write.csv(res, file = paste0("resultados/deseq_results_", 
+                                 treatment, "_vs_", control,".csv"))
+    # Generar gráfico de volcano para identificar DEGs
+    volcano_plot <- EnhancedVolcano(res,        
+                    lab = rownames(res),
+                    x = 'log2FoldChange',
+                    y = 'padj',
+                    axisLabSize = 12,
+                    pCutoff = 0.01,
+                    FCcutoff = 1,
+                    col = c('grey', 'orange', 'purple', 'forestgreen'),
+                    colAlpha = 0.7, 
+                    pointSize = 3,
+                    title = "Volcano Plot",
+                    titleLabSize = 12,
+                    subtitle = paste(treatment, "vs", control),
+                    subtitleLabSize = 10,
+                    captionLabSize = 10,
+                    labSize = 3,
+                    drawConnectors = F,
+                    legendLabels = c('NS','|log2FC|>1','adj-p<0.01','DEG'),
+                    legendPosition = 'right',
+                    legendLabSize = 12,
+                    border = 'full')
+    # Imprimir volcano plot
+    print(volcano_plot)
+    # Exportar volcano plot
+    ggsave(filename = paste0("resultados/volcano_plot_", treatment,
+                             "_vs_", control,".pdf"), 
+           plot = volcano_plot, width = 11, height = 8.5)
+    # Filtrar los DEGs (p-valor ajustado < 0.01 y |FC| > 1)
+    deg <- subset(res, padj < 0.01 & abs(log2FoldChange) > 1)
+    cat("DEGs:", nrow(deg), "\n")
+    # Filtrar genes inducidos (FC > 1)
+    up <- subset(deg, log2FoldChange > 1)
+    cat("Up-regulated:", nrow(up), "\n")
+    # Filtrar genes reprimidos (FC < -1)
+    down <- subset(deg, log2FoldChange < -1)
+    cat("Down-regulated:", nrow(down), "\n")
+    # Guardar el número de DEGs en un vector
+    numdegs <- c(nrow(deg), nrow(up), nrow(down))
+    # Exportar vector numdegs a un archivo de texto
+    write.table(numdegs, file = paste0("resultados/numdegs_", 
+                                       treatment, "_vs_", control,".txt"), 
+                row.names = FALSE, col.names = FALSE)
+    # Exportar tabla de DEGs
+    write.csv(deg, file = paste0("resultados/deseq_deg_", treatment, "_vs_", 
+                                 control, ".csv"), row.names = TRUE)
+    # Extraer las muestras que pertenecen al BioProject especificado
+    biosamples <- metadata %>% filter(BP == bioproject) %>% select(replicates)
+    # Extraer matriz de conteos normalizados
+    normcounts <- counts(dds_norm, normalized = TRUE)
+    # Reemplazar nombres de columnas
+    colnames(normcounts) <- metadata$replicates 
+    # Subset de la matriz de conteos con las muestras del contraste
+    subnormcounts <- normcounts[, biosamples$replicates] 
+    # Extraer IDs de los DEGs
+    deg_id <- rownames(deg)
+    # Generar mapa de calor para los DEGs seleccionados
+    heatmap_plot <- pheatmap(subnormcounts[deg_id,], 
+                             scale = "row", 
+                             show_rownames = FALSE, 
+                             treeheight_row = 0, 
+                             color = viridis(100),
+                             main = paste("Heatmap of", treatment, "vs", control))
+    # Imprimir heatmap
+    print(heatmap_plot)
+    # Exportar heatmap
+    ggsave(filename = paste0("resultados/heatmap_", 
+                             treatment, "_vs_", control,".pdf"), 
+           plot = heatmap_plot, width = 11, height = 8.5)
+}
+```
+
+### 3.1. Bioproyecto1
+
+Definir las condiciones a comparar por bioproyecto
+```{r}
+metadatos %>% 
+    filter(BP == "BP1") %>% 
+    group_by(conditions) %>% 
+    summarise()
+```
+
+Realizar el análisis de expresión diferencial del bioproyecto1 con la nueva función. Los resultados generados previamente se van a sobre-escribir.
+```{r}
+analyzeDEG(ddsnorm = dds_norm, 
+           metadata = metadatos, 
+           bioproject = "BP1", # agregar nombre
+           treatment = "BP1_drought", # agregar nombre
+           control = "BP1_control") # agregar nombre
+```
+
+### 3.2. Bioproyecto2
+
+Definir las condiciones a comparar por bioproyecto
+```{r}
+metadatos %>% 
+    filter(BP == "BP2") %>% 
+    group_by(conditions) %>% 
+    summarise()
+```
+
+Realizar el análisis de expresión diferencial con la nueva función
+```{r}
+analyzeDEG(ddsnorm = dds_norm, 
+           metadata = metadatos, 
+           bioproject = "BP2", # agregar nombre
+           treatment = "BP2_drought", # agregar nombre
+           control = "BP2_control") # agregar nombre
+```
+
+
+
+Tabla resumen de DEGs
+```{r}
+# Importar archivos de numero de degs
+numdegs_BP1 <- read.table(file = "resultados/numdegs_BP1_drought_vs_BP1_control.txt")
+numdegs_BP2 <- read.table(file = "resultados/numdegs_BP2_drought_vs_BP2_control.txt")
+
+```
+
+Actividad en equipo: 
+Generar un bloque de código para combinar los 4 vectores numdegs en un data frame llamado degsummary. 
+Agregar los siguientes nombres de filas: DEG, Up, Down. 
+Agregar los siguientes nombres de columnas: BP1, BP2, BP3, BP4. 
+Transponer filas y columnas (tip: usar la función t de R base). 
+Imprimir la tabla final de degsummary. 
+Exportar la tabla como un archivo csv a la carpeta results.
+```{r}
+
+```
+
+## 4. Identificación de DEGs comúnes y únicos entre bioproyectos
+
+Importar tablas de degs
+```{r}
+BP1_deg <- read.csv(file="resultados/deseq_deg_BP1_drought_vs_BP1_control.csv", 
+                    row.names = 1)
+BP2_deg <- read.csv(file="resultados/deseq_deg_BP2_drought_vs_BP2_control.csv", 
+                    row.names = 1)
+
+```
+
+Generar listas de degs
+```{r}
+deglist <- list(BP1_drought = rownames(BP1_deg), # se acomodaron por horas
+                BP2_drought = rownames(BP2_deg))
+
+str(deglist)
+```
+
+Realizar diagrama de Venn entre las listas de degs
+```{r}
+venn <- ggVennDiagram(deglist, label_alpha = 0.5) +
+    scale_fill_viridis() +
+    ggtitle("Common and unique DEGs across bioprojects")
+venn
+ggsave(filename = "resultados/venn_degs.pdf", plot = venn, 
+       width = 11, height = 8.5)
+```
+
+Extraer listas de DEGs comúnes y únicos
+```{r}
+# Generar objeto Venn
+ venn_object <- Venn(deglist)
+
+# Extraer intersecciones
+intersections <- process_data(venn_object)
+intersections$regionData
+```
+
+```{r}
+# Crear lista con gene IDs de las intersecciones 
+my_list <- intersections$regionData$item
+str(my_list)
+```
+
+```{r}
+# Agregar nombres de las intersecciones a la lista
+names(my_list) <- intersections$regionData$name
+str(my_list)
+```
+
+```{r}
+# Encontrar la longitud máxima de los vectores en la lista
+max_length <- max(sapply(my_list, length)) # sapply devuelve un vector
+max_length
+# Rellenar los vectores más cortos con NAs
+my_list_padded <- lapply(my_list, function(x) { # lapply devuelve una lista
+  length(x) <- max_length
+  return(x)
+})
+str(my_list_padded)
+```
+
+```{r}
+# Convertir la lista rellenada a un dataframe
+my_df <- as.data.frame(my_list_padded)
+head(my_df)
+# Exportar la tabla con DEGs comúnes y únicos entre los bioproyectos
+write_csv(my_df, file="resultados/common_unique_degs.csv")
+```
+
+Continuar con el script 5_CategorizaciónFuncional.Rmd
+
+```{r}
+sessionInfo()
+```

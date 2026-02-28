@@ -1,0 +1,270 @@
+---
+title: "Categorías funcionales sobre-representadas a partir de DEGs comunes"
+author: "Abraham Cruz-Mendívil"
+date: "2025-07-02"
+output: 
+ html_document:
+    toc: yes
+    toc_float: yes
+    theme: readable
+    highlight: zenburn
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Instalar paquetes (sólo la primera vez)
+```{r, eval = FALSE}
+# BiocManager::install("goseq")
+# install.packages("tidyverse")
+```
+
+Cargar paquetes (cada vez que inicie sesión en R)
+```{r, message = FALSE}
+library(goseq)
+library(tidyverse)
+```
+
+## 1. Importación de archivos
+
+Importar degs comunes y unicos del meta-análisis
+```{r}
+common_unique_degs <- read.csv("resultados/common_unique_degs.csv")
+head(common_unique_degs)
+```
+
+Extraer lista de los degs comunes entre todos los bioproyectos
+```{r}
+commondegs <- common_unique_degs$BP1_drought.BP2_drought
+head(commondegs)
+```
+
+Importar lista de genes expresados y guardarlos en un vector
+```{r}
+expgen <- rownames(read.csv(file = "resultados/filtcounts.csv", row.names = 1))
+head(expgen)
+```
+
+Generar un vector numérico donde 1 indica que el elemento está en ambas listas
+```{r}
+degv <- ifelse(expgen %in% commondegs, 1, 0)
+degv[1:35]
+```
+
+Contar número de DEGs
+```{r}
+table(degv) 
+```
+
+Importar archivo descargado de biomart
+```{r}
+biomart <- read.delim(file = "mart_export_ZM.txt")
+head(biomart)
+```
+
+Formatear archivo de longitud de genes
+```{r}
+gene_length <- biomart %>%
+  rename(gene = Gene.stable.ID) %>% # renombrar
+  distinct(gene, .keep_all = TRUE) %>% # eliminar gene IDs repetidos
+  mutate(length = Gene.end..bp. - Gene.start..bp.) %>% # calcular longitud
+  select(gene, length) %>% # conservar columnas gene y length
+  arrange(gene) # ordenar por tabla por gene IDs
+head(gene_length)
+```
+
+Exportar archivo de longitud de genes
+```{r}
+write_csv(gene_length, file="gene_length.csv")
+```
+
+GOseq requiere como entrada un vector con la longitud de genes expresados. A continuación lo formatearemos.
+
+Convertir columna de gene IDs a rownames
+```{r}
+genlen <- column_to_rownames(gene_length, var = "gene")
+head(genlen)
+```
+
+Conservar filas que coincidan con expgen
+```{r}
+expgenlen <- genlen[expgen,] 
+head(expgenlen)
+```
+
+Verificar que los vectores expgenlen y degv tengan la misma longitud
+```{r}
+length(expgenlen) == length(degv)
+```
+
+Formatear archivo de categorías funcionales Gene Ontology (GO)
+
+Renombrar columnas y eliminar genes sin términos GO
+```{r}
+gene_GO <- biomart %>%
+  rename(gene = Gene.stable.ID, category = GO.term.accession) %>% # renombrar
+  select(gene, category) %>% # seleccionar columnas de interes
+  filter(category != "") %>% # eliminar filas donde category está vacía
+  distinct() %>% # eliminar filas repetidas en todas sus columnas
+  arrange(gene) # ordenar por tabla por gene IDs
+head(gene_GO)
+```
+
+Exportar archivo de genes y términos GO de tomate
+```{r}
+write_csv(gene_GO, file = "gene_GO.csv")
+```
+
+Extraer términos GO de genes expresados
+```{r}
+sub_GO <- gene_GO %>% 
+    filter(gene %in% expgen) #conserva filas que coincidan con expgen
+head(sub_GO)
+```
+
+## 2. Análisis de sobre-representación (ORA) de categorías funcionales
+
+Calcular sesgo de longitud genes usando pwf (Probability Weighting Function)
+```{r}
+pwf <- nullp(degv, bias.data = expgenlen)
+head(pwf)
+```
+
+Añadir gene IDs como nombres de filas
+```{r}
+rownames(pwf) <- expgen
+head(pwf)
+```
+
+Realizar análisis de sobre-representación con goseq
+```{r}
+go_results <- goseq(pwf, gene2cat = sub_GO, method = "Wallenius")
+head(go_results)
+```
+
+Realizar corrección de comparaciones múltiples (p-ajustada) 
+```{r}
+adjpvalue <- p.adjust(go_results$over_represented_pvalue, 
+                      method = "BH") # Benjamini-Hochberg (False Discovery Rate)
+head(adjpvalue)
+```
+
+Editar tabla de resultados
+```{r}
+go_results <- go_results %>%
+    mutate(adj_pvalue = adjpvalue) %>% # añadir nueva columna con adj-p
+    rename(pvalue = over_represented_pvalue) %>% # renombrar columna pvalue
+    select(-under_represented_pvalue) %>% # eliminar columna
+    relocate(adj_pvalue, .after = category) # reubicar nueva columna 
+head(go_results)
+```
+
+Exportar tabla de resultados
+```{r}
+write_csv(go_results, file = "GOresults_commonDEGs.csv")
+```
+
+Extraer categorías GO sobre-representadas (p-adj < 0.05)
+```{r}
+go_over_represented <- subset(go_results, adj_pvalue < 0.05)
+go_over_represented
+# Si no hubiera términos significativos con adj-p, usar p < 0.01
+#go_over_represented <- subset(go_results, pvalue < 0.01)
+```
+
+Generar gráfico de términos GO sobre-representados 
+```{r}
+p1 <- go_over_represented %>% 
+  mutate(go_over_represented, 
+         term = fct_reorder(term, adj_pvalue, .desc = T)) %>% 
+  mutate(PercDE = numDEInCat*100/numInCat)  %>% 
+  ggplot(aes(x = PercDE,
+             y = term,
+             colour = adj_pvalue, 
+             size = numDEInCat)) +
+  geom_point() +
+  expand_limits(x = 0) +
+  labs(title = "Over-represented GO terms",
+       subtitle = "Common DEGs in response to drought stress in Zea mays leaves", 
+       x = "DE genes in category (%)", 
+       y = "GO term", 
+       colour = "adj-p", 
+       size = "Count")
+p1
+ggsave(filename = "resultados/orGO_commonDEGs.pdf", plot = p1, 
+       width = 11, height = 8.5)
+```
+
+## 3. Extraer listas de DEGs de las categorías sobre-representadas
+
+Unir categorías sobre-representadas y genes (genoma completo)
+```{r}
+orGO_gene <- go_over_represented %>% 
+  select(category, term, ontology) %>% # Extraer términos GO sobre-representados
+  inner_join(gene_GO, by = "category") # Unir gene IDs (genoma completo)
+head(orGO_gene)
+```
+
+Convertir vector de DEGs comunes en data frame 
+```{r}
+deg <- as.data.frame(commondegs)
+colnames(deg) <- "gene"
+head(deg)
+```
+
+Importar tablas de degs y extraer columnas de gene IDs y log2FC
+```{r}
+BP1_deg <- read.csv(file="resultados/deseq_deg_BP1_drought_vs_BP1_control.csv")
+BP1_deg <- BP1_deg %>% 
+    mutate(gene = X, log2FC_BP1 = log2FoldChange) %>% 
+    select(gene, log2FC_BP1) 
+BP2_deg <- read.csv(file="resultados/deseq_deg_BP2_drought_vs_BP2_control.csv")
+BP2_deg <- BP2_deg %>%
+    mutate(gene = X, log2FC_BP2 = log2FoldChange) %>% 
+    select(gene, log2FC_BP2) 
+
+
+head(BP1_deg)
+head(BP2_deg)
+
+
+```
+
+Unir categorías sobre-representadas y DEGs
+```{r}
+deg_orGO <- orGO_gene %>%
+    inner_join(deg, by = "gene") %>% # Unir IDs de DEGs
+    inner_join(BP1_deg, by = "gene") %>% # Unir valores de FC de cada bioproyecto
+    inner_join(BP2_deg, by = "gene") %>%
+    arrange(category)  # Ordenar filas por categoría
+head(deg_orGO)
+```
+Verificar que el número de DEGs sea igual en la tabla de categorías sobre-representadas, y en esta última tablas que contiene los gene IDs y sus valores FC
+```{r}
+sum(go_over_represented$numDEInCat) == nrow(deg_orGO)
+```
+
+Conocer el valor de expresión promedio de los DEGs por categoría
+```{r}
+meanFC <- deg_orGO %>% 
+  group_by(term) %>% 
+  summarize(mean_log2FC_BP1 = mean(log2FC_BP1),
+            mean_log2FC_BP2 = mean(log2FC_BP2))
+
+meanFC
+```
+
+Exportar resultados
+```{r}
+write_csv(deg_orGO, file="resultados/orGO_commonDEGs.csv")
+write_csv(meanFC, file="resultados/orGO_commonDEGs_meanFC.csv")
+```
+
+Continuar con el script 6_FormateoArchivos.Rmd, donde prepararemos los archivos de entrada para el análisis de redes de co-expresión.
+
+```{r}
+sessionInfo()
+```
+
+
