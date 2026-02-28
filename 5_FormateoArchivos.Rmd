@@ -1,7 +1,6 @@
 ---
 title: "Formateo de archivos para cemitool"
-author: "Abraham Cruz-Mendívil"
-date: "2025-07-03"
+author: "Rodrigo Granados"
 output:
   html_document:
     toc: true
