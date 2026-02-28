@@ -1,7 +1,6 @@
 ---
 title: "Categorías funcionales sobre-representadas a partir de DEGs comunes"
-author: "Abraham Cruz-Mendívil"
-date: "2025-07-02"
+author: "Rodrigo Granados"
 output: 
  html_document:
     toc: yes
