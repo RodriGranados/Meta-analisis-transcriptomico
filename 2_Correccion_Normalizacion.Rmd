@@ -1,7 +1,6 @@
 ---
 title: "Corrección del efecto por lote"
-author: "Abraham Cruz-Mendívil"
-date: "2025-07-01"
+author: "Rodrigo Granados"
 output:
   html_document:
     toc: true
